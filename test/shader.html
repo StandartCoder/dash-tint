@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dash Tint shader check</title>
+<style>
+  :root { --bg: #111; --fg: #ddd; --pass: #5c5; --fail: #f55; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 ui-monospace, Menlo, monospace; }
+  canvas { width: 100%; max-width: 1920px; height: auto; display: block; background: #222; }
+  .pass { color: var(--pass); } .fail { color: var(--fail); }
+</style>
+</head>
+<body>
+<!--
+  The tint's fragment shader (apps/dash_tint/shader.js) compiled by WebGL 1, which takes GLSL ES 1.00 as the
+  cluster's GPU does, drawn at the panel's 1920x720 with the cluster-render quad's v_uv ((0,0) top-left), and
+  probed pixel by pixel. Open this file in a browser; the title says PASS or FAIL. The picture shows where the
+  tint lands (outline on): over BMW's gauges on the car, here over grey.
+-->
+<canvas id="panel" width="1920" height="720"></canvas>
+<pre id="out"></pre>
+<script>var module = { exports: {} };</script>
+<script src="../apps/dash_tint/shader.js"></script>
+<script>
+'use strict';
+const shader = module.exports;
+const VIOLET = [143, 0, 255];
+const STRENGTH = 0.7;
+const ALPHA_FULL = Math.round(STRENGTH * 255);
+const ALPHA_TOLERANCE = 3;
+const RAD = Math.PI / 180;
+const out = document.getElementById('out');
+const results = [];
+function report(ok, what) { results.push(ok); out.innerHTML += '<span class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS ' : 'FAIL ') + what + '</span>\n'; }
+
+const canvas = document.getElementById('panel');
+const gl = canvas.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true, antialias: false });
+
+function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+}
+
+const VS = 'attribute vec2 a_position; varying vec2 v_uv;\n' +
+    'void main() { v_uv = vec2(a_position.x * 0.5 + 0.5, 0.5 - a_position.y * 0.5); gl_Position = vec4(a_position, 0.0, 1.0); }';
+let program;
+try {
+    program = gl.createProgram();
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, shader.fragmentShader()));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+    report(true, 'compiles and links as GLSL ES 1.00 (fragment precision: ' +
+        gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.MEDIUM_FLOAT).precision + ' bit mediump here)');
+} catch (e) {
+    report(false, 'compile: ' + e.message);
+    program = null;
+}
+
+/** Draws the shader with outline 0 or 1 and returns the RGBA pixels, row 0 at the top. */
+function draw(outline) {
+    gl.useProgram(program);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(program, 'a_position');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform3f(gl.getUniformLocation(program, shader.UNIFORM.COLOR), VIOLET[0] / 255, VIOLET[1] / 255, VIOLET[2] / 255);
+    gl.uniform1f(gl.getUniformLocation(program, shader.UNIFORM.STRENGTH), STRENGTH);
+    gl.uniform1f(gl.getUniformLocation(program, shader.UNIFORM.OUTLINE), outline);
+    gl.viewport(0, 0, shader.PANEL_W, shader.PANEL_H);
+    gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    const px = new Uint8Array(shader.PANEL_W * shader.PANEL_H * 4);
+    gl.readPixels(0, 0, shader.PANEL_W, shader.PANEL_H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return (x, y) => { const i = ((shader.PANEL_H - 1 - y) * shader.PANEL_W + x) * 4; return Array.from(px.slice(i, i + 4)); };
+}
+
+/** The point at angle deg and radius r of gauge g, rounded to px. */
+function at(g, deg, r) { return [Math.round(g.cx + r * Math.cos(deg * RAD)), Math.round(g.cy + r * Math.sin(deg * RAD))]; }
+/** Whether x, y is in gauge g's band, edges excluded (JS, apart from the shader, to cross-check it). */
+function inBand(g, x, y) {
+    const r = Math.hypot(x - g.cx, y - g.cy);
+    let a = Math.atan2(y - g.cy, x - g.cx) / RAD;
+    const mid = (g.from + g.to) / 2;
+    const off = Math.abs(((a - mid) % 360 + 540) % 360 - 180);
+    return r > g.r0 && r < g.r1 && off < (g.to - g.from) / 2;
+}
+function inKeepOut(x, y) { return shader.KEEP_OUT.some((k) => x >= k.box[0] && x <= k.box[2] && y >= k.box[1] && y <= k.box[3]); }
+
+if (program) {
+    const px = draw(0);
+    const [speedo, power] = shader.GAUGES;
+    const mid = (g) => (g.r0 + g.r1) / 2;
+    // band middles away from every keep-out box: full strength, violet
+    [[speedo, 150], [speedo, 215], [power, 0], [power, -40], [power, 40]].forEach((p) => {
+        const xy = at(p[0], p[1], mid(p[0]));
+        const c = px(xy[0], xy[1]);
+        const clear = !inKeepOut(xy[0], xy[1]);
+        report(clear && Math.abs(c[3] - ALPHA_FULL) <= ALPHA_TOLERANCE && c[0] === VIOLET[0] && c[2] === VIOLET[2],
+            p[0].id + ' band at ' + p[1] + ' deg ' + xy + ': rgba ' + c + ' (want ' + VIOLET + ',' + ALPHA_FULL + ')');
+    });
+    // outside the bands: nothing
+    [[960, 360], [960, 80], [820, 600], [1100, 200]].forEach((xy) => {
+        const c = px(xy[0], xy[1]);
+        report(c[3] === 0, 'off the bands ' + xy + ': alpha ' + c[3]);
+    });
+    // the soft edge: half way through the feather outside r1 (where no keep-out box is), between none and full
+    const edge = at(power, 0, power.r1 + 14);
+    const ce = px(edge[0], edge[1]);
+    report(!inKeepOut(edge[0], edge[1]) && ce[3] > 0 && ce[3] < ALPHA_FULL,
+        'soft outer edge ' + edge + ': alpha ' + ce[3] + ' between 0 and ' + ALPHA_FULL);
+    // every keep-out box: no tint inside (each box's points that lie in a band, else its centre)
+    shader.KEEP_OUT.forEach((k) => {
+        const b = k.box, inside = [];
+        for (let y = b[1] + 1; y < b[3]; y += 4) for (let x = b[0] + 1; x < b[2]; x += 4) {
+            if (shader.GAUGES.some((g) => inBand(g, x, y))) inside.push([x, y]);
+        }
+        const probes = inside.length ? inside : [[Math.round((b[0] + b[2]) / 2), Math.round((b[1] + b[3]) / 2)]];
+        const worst = probes.reduce((m, xy) => Math.max(m, px(xy[0], xy[1])[3]), 0);
+        report(worst === 0, k.id + ': ' + probes.length + (inside.length ? ' points in a band' : ' centre (no band here)') + ', highest alpha ' + worst);
+    });
+    // outline: white on the band's inner ring, the tint still inside it
+    const lined = draw(1);
+    const ring = at(speedo, 150, speedo.r0);
+    report(lined(ring[0], ring[1]).join() === '255,255,255,255', 'outline on the inner ring ' + ring + ': rgba ' + lined(ring[0], ring[1]));
+    const inner = at(speedo, 150, mid(speedo));
+    report(lined(inner[0], inner[1])[3] > 0 && lined(inner[0], inner[1])[0] === VIOLET[0], 'outline mode keeps the tint ' + inner + ': rgba ' + lined(inner[0], inner[1]));
+}
+const passed = results.filter(Boolean).length;
+document.title = (passed === results.length && results.length ? 'PASS ' : 'FAIL ') + passed + '/' + results.length + ' Dash Tint shader check';
+out.innerHTML = '<b>' + document.title + '</b>\n\n' + out.innerHTML;
+</script>
+</body>
+</html>
