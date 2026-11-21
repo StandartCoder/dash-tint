@@ -1,0 +1,37 @@
+{
+  "id": "dash_tint",
+  "title": "Dash Tint",
+  "description": "Tints BMW's red Sport look on the instrument cluster in a colour of your own, in Sport and XtraBoost",
+  "version": "0.1.0",
+  "vendor": "custom",
+  "loggingId": "OAD1",
+  "iconGlyph": "DT",
+  "mguHmi": ["ID7"],
+  "requires": { "cluster-render": "0.4.0" },
+  "autostart": true,
+  "signals": {
+    "de.bmw.infotainment.drivingexcitement.FES": {
+      "statusFESVehicleDynamicSwitchHMI": "rs"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "menu",
+      "title": "Dash Tint",
+      "settings": true,
+      "items": [
+        ["tworow", "STATUS", "Dash Tint"]
+      ]
+    }
+  ],
+  "settings": [
+    { "key": "enabled", "label": "Tint the cluster", "type": "bool", "default": true },
+    { "key": "tintIn", "label": "Tint in", "type": "choice", "default": "sport",
+      "options": [["sport", "Sport and XtraBoost"], ["boost", "XtraBoost only"]] },
+    { "key": "color", "label": "Colour", "type": "choice", "default": "violet",
+      "options": [["violet", "Violet"], ["purple", "Purple"], ["pink", "Pink"], ["magenta", "Magenta"]] },
+    { "key": "strength", "label": "Strength", "type": "number", "unit": "%", "default": 70, "steps": [40, 55, 70, 85, 100] },
+    { "key": "outline", "label": "Calibration outline (white edges, any drive mode)", "type": "bool", "default": false }
+  ]
+}
