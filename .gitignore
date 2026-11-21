@@ -1,0 +1,7 @@
+# build output and BMW's oap-sdk (not redistributable: the Store makes it on the car from a BMW app)
+dist/
+oap-sdk/
+# the head unit's SOME/IP catalog and cluster photos (car-specific)
+reference/
+__pycache__/
+.claude/
